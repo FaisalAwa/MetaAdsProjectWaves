@@ -61,13 +61,21 @@
     .config-panel h2 { font-size: 14px; color: var(--muted); margin-bottom: 16px; letter-spacing: .05em; text-transform: uppercase; }
     .config-grid {
       display: grid;
-      grid-template-columns: 1fr 2fr 1fr 1fr auto;
       gap: 12px;
       align-items: end;
     }
+    .config-row-1 {
+      grid-template-columns: 1fr 2fr auto;
+      margin-bottom: 12px;
+    }
+    .config-row-2 {
+      grid-template-columns: 2fr 1fr 1fr auto;
+    }
     @media (max-width: 900px) {
-      .config-grid { grid-template-columns: 1fr 1fr; }
+      .config-row-1 { grid-template-columns: 1fr 1fr; }
+      .config-row-2 { grid-template-columns: 1fr 1fr; }
       .btn-fetch { grid-column: 1 / -1; }
+      .btn-load-accounts { grid-column: 1 / -1; }
     }
     .field label {
       display: block;
@@ -107,6 +115,11 @@
     .btn-fetch:hover { opacity: .88; }
     .btn-fetch:active { transform: scale(.97); }
     .btn-fetch:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-load-accounts { background: var(--accent2); }
+    .btn-load-accounts:hover { opacity: .88; }
+    .btn-load-accounts:active { transform: scale(.97); }
+    .btn-load-accounts:disabled { opacity: .5; cursor: not-allowed; }
+    #accountSelect:disabled { opacity: .5; cursor: not-allowed; }
 
     /* ── MAIN ── */
     main { padding: 24px; max-width: 1600px; margin: 0 auto; }
@@ -530,14 +543,24 @@
 <!-- Config Panel -->
 <div class="config-panel">
   <h2>API Configuration</h2>
-  <div class="config-grid">
+  <div class="config-grid config-row-1">
     <div class="field">
-      <label>Ad Account ID</label>
-      <input id="accountId" type="text" placeholder="act_123456789" value="act_1158136208754602"/>
+      <label>Business ID</label>
+      <input id="businessId" type="text" placeholder="e.g. 2669039993376613" value="2669039993376613"/>
     </div>
     <div class="field">
       <label>Access Token</label>
       <input id="accessToken" type="password" placeholder="Paste your access token…" value="EAAR76ktJvEIBQyDXkXK2uyvEZAxVAPX85ggllXlkueKNFxPKPci2tynJBZC87PxZBptCSbqRvWUyVcO0UjZCFg1HnbAUKWavFqvZAv8YhcJmk4hcjxSB9P2NuxZC9ENPN9gWJOkYpQHJ1MGcZCy747RMx2PD0jcoALZBDUAAq2KpMJnDVCFrnjDEOh9ZAT17C9ixlIbZCJM6CG45fT"/>
+    </div>
+    <button class="btn-fetch btn-load-accounts" id="btnLoadAccounts" onclick="loadAccounts()">&#128260; Load Accounts</button>
+  </div>
+
+  <div class="config-grid config-row-2">
+    <div class="field">
+      <label>Ad Account</label>
+      <select id="accountSelect" disabled>
+        <option value="">-- Load accounts first --</option>
+      </select>
     </div>
     <div class="field">
       <label>Date Range</label>
@@ -560,7 +583,7 @@
         <option value="ad">Ad</option>
       </select>
     </div>
-    <button class="btn-fetch" onclick="fetchData()">&#9654; Fetch Data</button>
+    <button class="btn-fetch" id="btnFetchData" onclick="fetchData()" disabled>&#9654; Fetch Data</button>
   </div>
 </div>
 
@@ -613,7 +636,7 @@
   <div class="empty" id="emptyState">
     <div class="icon">📊</div>
     <p>No data loaded yet</p>
-    <small>Fill in your API credentials above and click <strong>Fetch Data</strong></small>
+    <small>Load your ad accounts above, select one, then click <strong>Fetch Data</strong></small>
   </div>
 </main>
 
@@ -695,13 +718,13 @@
 
   // ── Fetch ──────────────────────────────────────────────────────
   async function fetchData() {
-    const accountId   = document.getElementById('accountId').value.trim();
+    const accountId   = document.getElementById('accountSelect').value;
     const accessToken = document.getElementById('accessToken').value.trim();
     const datePreset  = document.getElementById('datePreset').value;
     const level       = document.getElementById('level').value;
 
     if (!accountId || !accessToken) {
-      showStatus('Please enter Account ID and Access Token.', 'error');
+      showStatus('Please select an Ad Account and enter Access Token.', 'error');
       return;
     }
 
@@ -709,7 +732,7 @@
     const url = `https://graph.facebook.com/v23.0/${accountId}/insights?fields=${fields}&date_preset=${datePreset}&level=${level}&access_token=${accessToken}&limit=200`;
 
     showStatus('Fetching campaign data…', 'loading');
-    document.querySelector('.btn-fetch').disabled = true;
+    document.getElementById('btnFetchData').disabled = true;
     document.getElementById('dashboard').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
 
@@ -748,8 +771,80 @@
       showStatus('Network error: ' + e.message, 'error');
       document.getElementById('emptyState').style.display = 'block';
     } finally {
-      document.querySelector('.btn-fetch').disabled = false;
+      document.getElementById('btnFetchData').disabled = false;
     }
+  }
+
+  // ── Load Ad Accounts from Business ID ─────────────────────────
+  async function loadAccounts() {
+    const businessId  = document.getElementById('businessId').value.trim();
+    const accessToken = document.getElementById('accessToken').value.trim();
+
+    if (!businessId || !accessToken) {
+      showStatus('Please enter Business ID and Access Token.', 'error');
+      return;
+    }
+
+    const url = `https://graph.facebook.com/v23.0/${businessId}/owned_ad_accounts`
+              + `?fields=name,account_id,account_status`
+              + `&access_token=${accessToken}`
+              + `&limit=500`;
+
+    showStatus('Loading ad accounts…', 'loading');
+    document.getElementById('btnLoadAccounts').disabled = true;
+
+    const select = document.getElementById('accountSelect');
+
+    try {
+      const resp = await fetch(url);
+      const json = await resp.json();
+
+      if (json.error) {
+        showStatus(`API Error: ${json.error.message}`, 'error');
+        return;
+      }
+
+      const accounts = json.data || [];
+
+      if (accounts.length === 0) {
+        showStatus('No ad accounts found under this Business ID.', 'error');
+        return;
+      }
+
+      // Clear and populate the dropdown
+      select.innerHTML = '<option value="">-- Select an account --</option>';
+
+      accounts.forEach(acc => {
+        const opt = document.createElement('option');
+        const actId = acc.account_id.startsWith('act_')
+                    ? acc.account_id
+                    : 'act_' + acc.account_id;
+        opt.value = actId;
+
+        const statusLabel = acc.account_status === 1 ? '' :
+                           acc.account_status === 2 ? ' [DISABLED]' :
+                           acc.account_status === 3 ? ' [UNSETTLED]' :
+                           acc.account_status === 101 ? ' [CLOSED]' : '';
+        opt.textContent = `${acc.name} (${actId})${statusLabel}`;
+        select.appendChild(opt);
+      });
+
+      select.disabled = false;
+      select.onchange = onAccountSelected;
+      hideStatus();
+      showStatus(`Loaded ${accounts.length} ad account(s). Select one to continue.`, 'success');
+
+    } catch (e) {
+      showStatus('Network error: ' + e.message, 'error');
+    } finally {
+      document.getElementById('btnLoadAccounts').disabled = false;
+    }
+  }
+
+  function onAccountSelected() {
+    const select = document.getElementById('accountSelect');
+    const fetchBtn = document.getElementById('btnFetchData');
+    fetchBtn.disabled = !select.value;
   }
 
   // ── Render ─────────────────────────────────────────────────────
@@ -937,7 +1032,9 @@
   // Auto-fetch on load if fields are pre-filled
   window.addEventListener('DOMContentLoaded', () => {
     const t = document.getElementById('accessToken').value;
-    if (t && t.length > 20) fetchData();
+    const b = document.getElementById('businessId').value;
+    // Auto-load accounts if Business ID and Access Token are pre-filled
+    if (t && t.length > 20 && b && b.length > 5) loadAccounts();
     // Restore saved Claude key
     const saved = localStorage.getItem('claude_api_key');
     if (saved) {
