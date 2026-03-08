@@ -785,10 +785,12 @@
       return;
     }
 
-    const url = `https://graph.facebook.com/v23.0/${businessId}/owned_ad_accounts`
-              + `?fields=name,account_id,account_status`
-              + `&access_token=${accessToken}`
-              + `&limit=500`;
+    const fields = 'name,account_id,account_status';
+    const baseUrl = `https://graph.facebook.com/v23.0/${businessId}`;
+
+    // Fetch both owned AND client ad accounts (for agency businesses)
+    const ownedUrl  = `${baseUrl}/owned_ad_accounts?fields=${fields}&access_token=${accessToken}&limit=500`;
+    const clientUrl = `${baseUrl}/client_ad_accounts?fields=${fields}&access_token=${accessToken}&limit=500`;
 
     showStatus('Loading ad accounts…', 'loading');
     document.getElementById('btnLoadAccounts').disabled = true;
@@ -796,17 +798,33 @@
     const select = document.getElementById('accountSelect');
 
     try {
-      const resp = await fetch(url);
-      const json = await resp.json();
+      // Fetch both endpoints in parallel
+      const [ownedResp, clientResp] = await Promise.all([
+        fetch(ownedUrl).then(r => r.json()).catch(() => ({ data: [] })),
+        fetch(clientUrl).then(r => r.json()).catch(() => ({ data: [] })),
+      ]);
 
-      if (json.error) {
-        showStatus(`API Error: ${json.error.message}`, 'error');
+      // Check for API errors on both
+      if (ownedResp.error && clientResp.error) {
+        showStatus(`API Error: ${ownedResp.error.message}`, 'error');
         return;
       }
 
-      const accounts = json.data || [];
+      const ownedAccounts  = ownedResp.data  || [];
+      const clientAccounts = clientResp.data  || [];
 
-      if (accounts.length === 0) {
+      // Merge and de-duplicate by account_id
+      const seen = new Set();
+      const allAccounts = [];
+
+      [...ownedAccounts, ...clientAccounts].forEach(acc => {
+        if (!seen.has(acc.account_id)) {
+          seen.add(acc.account_id);
+          allAccounts.push(acc);
+        }
+      });
+
+      if (allAccounts.length === 0) {
         showStatus('No ad accounts found under this Business ID.', 'error');
         return;
       }
@@ -814,7 +832,7 @@
       // Clear and populate the dropdown
       select.innerHTML = '<option value="">-- Select an account --</option>';
 
-      accounts.forEach(acc => {
+      allAccounts.forEach(acc => {
         const opt = document.createElement('option');
         const actId = acc.account_id.startsWith('act_')
                     ? acc.account_id
@@ -832,7 +850,7 @@
       select.disabled = false;
       select.onchange = onAccountSelected;
       hideStatus();
-      showStatus(`Loaded ${accounts.length} ad account(s). Select one to continue.`, 'success');
+      showStatus(`Loaded ${allAccounts.length} ad account(s). Select one to continue.`, 'success');
 
     } catch (e) {
       showStatus('Network error: ' + e.message, 'error');
