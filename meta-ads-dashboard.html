@@ -69,7 +69,7 @@
       margin-bottom: 12px;
     }
     .config-row-2 {
-      grid-template-columns: 2fr 1fr 1fr auto;
+      grid-template-columns: 2fr 1fr auto;
     }
     @media (max-width: 900px) {
       .config-row-1 { grid-template-columns: 1fr 1fr; }
@@ -259,6 +259,43 @@
 
     .bar-cell { display: flex; align-items: center; gap: 8px; }
     .mini-bar { height: 6px; border-radius: 3px; background: var(--accent); min-width: 4px; transition: width .4s; }
+
+    /* ── BREADCRUMB ── */
+    .breadcrumb-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 20px;
+      padding: 12px 16px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 13px;
+      flex-wrap: wrap;
+    }
+    .breadcrumb-item {
+      color: var(--accent);
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background .15s;
+    }
+    .breadcrumb-item:hover { background: rgba(24,119,242,.15); text-decoration: underline; }
+    .breadcrumb-item.current { color: var(--text); cursor: default; font-weight: 600; }
+    .breadcrumb-item.current:hover { background: none; text-decoration: none; }
+    .breadcrumb-sep { color: var(--muted); font-size: 11px; user-select: none; }
+
+    /* ── DRILLABLE ROWS ── */
+    tbody tr.drillable { cursor: pointer; }
+    tbody tr.drillable:hover { background: rgba(24,119,242,.08); }
+    td .drill-arrow {
+      display: inline-block;
+      margin-left: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      transition: transform .15s, color .15s;
+    }
+    tbody tr.drillable:hover td .drill-arrow { color: var(--accent); transform: translateX(2px); }
 
     /* ── EMPTY / PLACEHOLDER ── */
     .empty {
@@ -575,15 +612,7 @@
         <option value="this_year">This Year</option>
       </select>
     </div>
-    <div class="field">
-      <label>Level</label>
-      <select id="level">
-        <option value="campaign" selected>Campaign</option>
-        <option value="adset">Ad Set</option>
-        <option value="ad">Ad</option>
-      </select>
-    </div>
-    <button class="btn-fetch" id="btnFetchData" onclick="fetchData()" disabled>&#9654; Fetch Data</button>
+    <button class="btn-fetch" id="btnFetchData" onclick="onFetchClick()" disabled>&#9654; Fetch Data</button>
   </div>
 </div>
 
@@ -597,17 +626,20 @@
   <!-- Dashboard (hidden until data loads) -->
   <div id="dashboard" style="display:none">
 
+    <!-- Breadcrumb Navigation -->
+    <div class="breadcrumb-bar" id="breadcrumb"></div>
+
     <!-- KPI Cards -->
     <div class="kpi-grid" id="kpiGrid"></div>
 
     <!-- Charts -->
     <div class="charts-row">
       <div class="chart-card">
-        <h3>Spend by Campaign</h3>
+        <h3 id="spendChartTitle">Spend by Campaign</h3>
         <div class="chart-wrap"><canvas id="spendChart"></canvas></div>
       </div>
       <div class="chart-card">
-        <h3>Impressions vs Clicks</h3>
+        <h3 id="icChartTitle">Impressions vs Clicks</h3>
         <div class="chart-wrap"><canvas id="impClickChart"></canvas></div>
       </div>
     </div>
@@ -616,7 +648,7 @@
     <div class="table-card">
       <div class="table-header">
         <div>
-          <h3>Campaign Breakdown</h3>
+          <h3 id="tableTitle">Campaign Breakdown</h3>
           <span class="table-meta" id="tableSubtitle"></span>
         </div>
         <input class="search-box" id="searchBox" placeholder="Search campaigns…" oninput="renderTable()"/>
@@ -706,34 +738,91 @@
   let spendChart = null;
   let icChart = null;
 
-  const FIELDS = [
-    { key: 'campaign_name', label: 'Campaign',    fmt: v => v,              align: 'left' },
-    { key: 'impressions',   label: 'Impressions', fmt: fmtNum,              align: 'right' },
-    { key: 'clicks',        label: 'Clicks',      fmt: fmtNum,              align: 'right' },
-    { key: 'spend',         label: 'Spend ($)',   fmt: v => '$'+fmtDec(v),  align: 'right' },
-    { key: 'cpc',           label: 'CPC ($)',     fmt: v => '$'+fmtDec(v),  align: 'right' },
-    { key: 'cpm',           label: 'CPM ($)',     fmt: v => '$'+fmtDec(v),  align: 'right' },
-    { key: 'ctr',           label: 'CTR (%)',     fmt: v => fmtDec(v)+'%', align: 'right' },
-  ];
+  // Drill-down navigation state
+  let drillState = {
+    level: 'campaign',
+    campaignId: null, campaignName: null,
+    adsetId: null, adsetName: null,
+  };
+  let drillCache = {};
 
-  // ── Fetch ──────────────────────────────────────────────────────
+  // Dynamic fields based on current drill level
+  function getFields() {
+    const nameKey   = drillState.level === 'campaign' ? 'campaign_name'
+                    : drillState.level === 'adset'    ? 'adset_name'
+                    :                                   'ad_name';
+    const nameLabel = drillState.level === 'campaign' ? 'Campaign'
+                    : drillState.level === 'adset'    ? 'Ad Set'
+                    :                                   'Ad';
+    return [
+      { key: nameKey,         label: nameLabel,      fmt: v => v,              align: 'left' },
+      { key: 'impressions',   label: 'Impressions',  fmt: fmtNum,              align: 'right' },
+      { key: 'clicks',        label: 'Clicks',       fmt: fmtNum,              align: 'right' },
+      { key: 'spend',         label: 'Spend ($)',    fmt: v => '$'+fmtDec(v),  align: 'right' },
+      { key: 'cpc',           label: 'CPC ($)',      fmt: v => '$'+fmtDec(v),  align: 'right' },
+      { key: 'cpm',           label: 'CPM ($)',      fmt: v => '$'+fmtDec(v),  align: 'right' },
+      { key: 'ctr',           label: 'CTR (%)',      fmt: v => fmtDec(v)+'%', align: 'right' },
+    ];
+  }
+
+  function getCacheKey() {
+    if (drillState.level === 'campaign') return 'campaign:';
+    if (drillState.level === 'adset')    return 'adset:' + drillState.campaignId;
+    return 'ad:' + drillState.adsetId;
+  }
+
+  function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function escAttr(s) { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+  // ── Fetch (with drill-down support) ────────────────────────────
+  function onFetchClick() {
+    drillState = { level:'campaign', campaignId:null, campaignName:null, adsetId:null, adsetName:null };
+    drillCache = {};
+    fetchData();
+  }
+
   async function fetchData() {
     const accountId   = document.getElementById('accountSelect').value;
     const accessToken = document.getElementById('accessToken').value.trim();
     const datePreset  = document.getElementById('datePreset').value;
-    const level       = document.getElementById('level').value;
+    const level       = drillState.level;
 
     if (!accountId || !accessToken) {
       showStatus('Please select an Ad Account and enter Access Token.', 'error');
       return;
     }
 
-    const fields = 'campaign_name,impressions,clicks,spend,cpc,cpm,ctr';
-    const url = `https://graph.facebook.com/v23.0/${accountId}/insights?fields=${fields}&date_preset=${datePreset}&level=${level}&access_token=${accessToken}&limit=200`;
+    // Check cache first
+    const cacheKey = getCacheKey();
+    if (drillCache[cacheKey]) {
+      rawData = drillCache[cacheKey];
+      renderDashboard(datePreset);
+      return;
+    }
 
-    showStatus('Fetching campaign data…', 'loading');
+    // Build field list based on drill level
+    const fieldsList = level === 'campaign'
+      ? 'campaign_name,campaign_id,impressions,clicks,spend,cpc,cpm,ctr'
+      : level === 'adset'
+      ? 'adset_name,adset_id,impressions,clicks,spend,cpc,cpm,ctr'
+      : 'ad_name,ad_id,impressions,clicks,spend,cpc,cpm,ctr';
+
+    let url = `https://graph.facebook.com/v23.0/${accountId}/insights`
+      + `?fields=${fieldsList}&date_preset=${datePreset}&level=${level}`
+      + `&access_token=${accessToken}&limit=500`;
+
+    // Add filtering for drill-down
+    if (level === 'adset' && drillState.campaignId) {
+      const filter = JSON.stringify([{ field:'campaign.id', operator:'EQUAL', value: drillState.campaignId }]);
+      url += `&filtering=${encodeURIComponent(filter)}`;
+    } else if (level === 'ad' && drillState.adsetId) {
+      const filter = JSON.stringify([{ field:'adset.id', operator:'EQUAL', value: drillState.adsetId }]);
+      url += `&filtering=${encodeURIComponent(filter)}`;
+    }
+
+    const levelLabel = level === 'campaign' ? 'campaign' : level === 'adset' ? 'ad set' : 'ad';
+    showStatus(`Fetching ${levelLabel} data…`, 'loading');
     document.getElementById('btnFetchData').disabled = true;
-    document.getElementById('dashboard').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
 
     try {
@@ -746,15 +835,21 @@
         return;
       }
 
+      const nameField = level === 'campaign' ? 'campaign_name' : level === 'adset' ? 'adset_name' : 'ad_name';
+      const idField   = level === 'campaign' ? 'campaign_id'   : level === 'adset' ? 'adset_id'   : 'ad_id';
+
       rawData = (json.data || []).map(r => ({
-        campaign_name: r.campaign_name || r.adset_name || r.ad_name || '(no name)',
-        impressions:   parseFloat(r.impressions  || 0),
-        clicks:        parseFloat(r.clicks       || 0),
-        spend:         parseFloat(r.spend        || 0),
-        cpc:           parseFloat(r.cpc          || 0),
-        cpm:           parseFloat(r.cpm          || 0),
-        ctr:           parseFloat(r.ctr          || 0),
+        [nameField]:   r[nameField] || '(no name)',
+        entity_id:     r[idField]   || '',
+        impressions:   parseFloat(r.impressions || 0),
+        clicks:        parseFloat(r.clicks      || 0),
+        spend:         parseFloat(r.spend       || 0),
+        cpc:           parseFloat(r.cpc         || 0),
+        cpm:           parseFloat(r.cpm         || 0),
+        ctr:           parseFloat(r.ctr         || 0),
       }));
+
+      drillCache[cacheKey] = rawData;
 
       if (rawData.length === 0) {
         showStatus('No data returned for this period.', 'error');
@@ -763,7 +858,7 @@
       }
 
       hideStatus();
-      renderDashboard(datePreset, level);
+      renderDashboard(datePreset);
       document.getElementById('lastFetched').textContent =
         'Updated ' + new Date().toLocaleTimeString();
 
@@ -773,6 +868,58 @@
     } finally {
       document.getElementById('btnFetchData').disabled = false;
     }
+  }
+
+  // ── Drill-Down Navigation ─────────────────────────────────────
+  function drillDown(entityId, entityName) {
+    if (drillState.level === 'campaign') {
+      drillState.level = 'adset';
+      drillState.campaignId = entityId;
+      drillState.campaignName = entityName;
+    } else if (drillState.level === 'adset') {
+      drillState.level = 'ad';
+      drillState.adsetId = entityId;
+      drillState.adsetName = entityName;
+    }
+    sortCol = 'spend';
+    sortAsc = false;
+    document.getElementById('searchBox').value = '';
+    fetchData();
+  }
+
+  function navigateTo(targetLevel) {
+    if (targetLevel === drillState.level) return;
+    if (targetLevel === 'campaign') {
+      drillState.level = 'campaign';
+      drillState.campaignId = null; drillState.campaignName = null;
+      drillState.adsetId = null;    drillState.adsetName = null;
+    } else if (targetLevel === 'adset') {
+      drillState.level = 'adset';
+      drillState.adsetId = null; drillState.adsetName = null;
+    }
+    sortCol = 'spend';
+    sortAsc = false;
+    document.getElementById('searchBox').value = '';
+    fetchData();
+  }
+
+  function renderBreadcrumb() {
+    const bc = document.getElementById('breadcrumb');
+    let html = '';
+    if (drillState.level === 'campaign') {
+      html = '<span class="breadcrumb-item current">&#128202; All Campaigns</span>';
+    } else if (drillState.level === 'adset') {
+      html = `<span class="breadcrumb-item" onclick="navigateTo('campaign')">&#128202; All Campaigns</span>`
+           + '<span class="breadcrumb-sep">&#9656;</span>'
+           + `<span class="breadcrumb-item current" title="${escHtml(drillState.campaignName)}">${escHtml(truncate(drillState.campaignName, 40))}</span>`;
+    } else {
+      html = `<span class="breadcrumb-item" onclick="navigateTo('campaign')">&#128202; All Campaigns</span>`
+           + '<span class="breadcrumb-sep">&#9656;</span>'
+           + `<span class="breadcrumb-item" onclick="navigateTo('adset')" title="${escHtml(drillState.campaignName)}">${escHtml(truncate(drillState.campaignName, 30))}</span>`
+           + '<span class="breadcrumb-sep">&#9656;</span>'
+           + `<span class="breadcrumb-item current" title="${escHtml(drillState.adsetName)}">${escHtml(truncate(drillState.adsetName, 40))}</span>`;
+    }
+    bc.innerHTML = html;
   }
 
   // ── Load Ad Accounts from Business ID ─────────────────────────
@@ -866,14 +1013,25 @@
   }
 
   // ── Render ─────────────────────────────────────────────────────
-  function renderDashboard(datePreset, level) {
+  function renderDashboard(datePreset) {
+    const levelLabel = drillState.level === 'campaign' ? 'campaigns'
+                     : drillState.level === 'adset'    ? 'ad sets'
+                     :                                   'ads';
+    const titleMap = { campaign:'Campaign Breakdown', adset:'Ad Set Breakdown', ad:'Ad Breakdown' };
+    const searchMap = { campaign:'Search campaigns…', adset:'Search ad sets…', ad:'Search ads…' };
+
+    renderBreadcrumb();
     renderKPIs(datePreset);
     renderCharts();
     renderTableHead();
     renderTable();
+
     document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('tableTitle').textContent = titleMap[drillState.level];
+    document.getElementById('searchBox').placeholder = searchMap[drillState.level];
     document.getElementById('tableSubtitle').innerHTML =
-      `${rawData.length} ${level}s &nbsp;|&nbsp; <span class="date-range-badge">&#128197; ${datePreset.replace(/_/g,' ')}</span>`;
+      `${rawData.length} ${levelLabel} &nbsp;|&nbsp; <span class="date-range-badge">&#128197; ${datePreset.replace(/_/g,' ')}</span>`;
   }
 
   function renderKPIs(datePreset) {
@@ -891,7 +1049,10 @@
       { label:'Avg CPC',          value:'$'+fmtDec(avgCPC),      sub: 'cost per click',             color:'#fbbf24', icon:'💲' },
       { label:'Avg CPM',          value:'$'+fmtDec(avgCPM),      sub: 'cost per 1k impr',           color:'#f05252', icon:'📢' },
       { label:'Avg CTR',          value: fmtDec(avgCTR)+'%',     sub: 'click-through rate',         color:'#38bdf8', icon:'📈' },
-      { label:'Campaigns',        value: rawData.length,          sub: 'active campaigns',           color:'#f97316', icon:'🎯' },
+      { label: drillState.level==='campaign' ? 'Campaigns' : drillState.level==='adset' ? 'Ad Sets' : 'Ads',
+        value: rawData.length,
+        sub: drillState.level==='campaign' ? 'active campaigns' : drillState.level==='adset' ? 'ad sets in campaign' : 'ads in ad set',
+        color:'#f97316', icon:'🎯' },
     ];
 
     document.getElementById('kpiGrid').innerHTML = cards.map(c => `
@@ -905,8 +1066,16 @@
   }
 
   function renderCharts() {
+    const fields = getFields();
+    const nameKey = fields[0].key;
+    const levelLabel = drillState.level === 'campaign' ? 'Campaign'
+                     : drillState.level === 'adset'    ? 'Ad Set'
+                     :                                   'Ad';
+    document.getElementById('spendChartTitle').textContent = `Spend by ${levelLabel}`;
+    document.getElementById('icChartTitle').textContent = `Impressions vs Clicks`;
+
     const sorted   = [...rawData].sort((a,b) => b.spend - a.spend).slice(0, 10);
-    const labels   = sorted.map(r => truncate(r.campaign_name, 22));
+    const labels   = sorted.map(r => truncate(r[nameKey], 22));
     const spends   = sorted.map(r => r.spend);
     const imprData = sorted.map(r => r.impressions);
     const clickData= sorted.map(r => r.clicks);
@@ -980,8 +1149,9 @@
   }
 
   function renderTableHead() {
+    const fields = getFields();
     const tr = document.getElementById('tableHead');
-    tr.innerHTML = FIELDS.map(f => `
+    tr.innerHTML = fields.map(f => `
       <th onclick="sortBy('${f.key}')" class="${sortCol===f.key?'sorted':''}">
         ${f.label}
         <span class="sort-icon">${sortCol===f.key ? (sortAsc?'▲':'▼') : '⇅'}</span>
@@ -990,8 +1160,10 @@
   }
 
   function renderTable() {
+    const fields = getFields();
+    const nameKey = fields[0].key;
     const q = document.getElementById('searchBox').value.toLowerCase();
-    let data = rawData.filter(r => r.campaign_name.toLowerCase().includes(q));
+    let data = rawData.filter(r => (r[nameKey]||'').toLowerCase().includes(q));
 
     data.sort((a,b) => {
       const va = a[sortCol], vb = b[sortCol];
@@ -1000,10 +1172,17 @@
     });
 
     const maxSpend = Math.max(...rawData.map(r=>r.spend), 1);
+    const isDrillable = drillState.level !== 'ad';
+    const emptyLabel = drillState.level === 'campaign' ? 'campaigns' : drillState.level === 'adset' ? 'ad sets' : 'ads';
 
-    document.getElementById('tableBody').innerHTML = data.map(r => `
-      <tr>
-        <td class="campaign-name" title="${r.campaign_name}">${r.campaign_name}</td>
+    document.getElementById('tableBody').innerHTML = data.map(r => {
+      const name = r[nameKey] || '(no name)';
+      const rowClass = isDrillable ? ' class="drillable"' : '';
+      const onclick  = isDrillable ? ` onclick="drillDown('${escAttr(r.entity_id)}','${escAttr(name)}')"` : '';
+      const arrow    = isDrillable ? '<span class="drill-arrow">&#9656;</span>' : '';
+      return `
+      <tr${rowClass}${onclick}>
+        <td class="campaign-name" title="${escHtml(name)}">${escHtml(name)}${arrow}</td>
         <td style="text-align:right">${fmtNum(r.impressions)}</td>
         <td style="text-align:right">${fmtNum(r.clicks)}</td>
         <td style="text-align:right">
@@ -1017,8 +1196,8 @@
         <td style="text-align:right">
           <span class="badge ${ctrBadge(r.ctr)}">${fmtDec(r.ctr)}%</span>
         </td>
-      </tr>
-    `).join('') || '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--muted)">No matching campaigns</td></tr>';
+      </tr>`;
+    }).join('') || `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--muted)">No matching ${emptyLabel}</td></tr>`;
   }
 
   function sortBy(col) {
@@ -1060,6 +1239,8 @@
       document.getElementById('chatSetup').style.display = 'none';
       document.getElementById('chatStatus').textContent = 'Claude ready · Ask in English or Urdu';
     }
+    // Clear drill cache when date range changes
+    document.getElementById('datePreset').addEventListener('change', () => { drillCache = {}; });
   });
 
   // ── CHATBOT ────────────────────────────────────────────────────
@@ -1151,8 +1332,13 @@
     const typingId = showTyping();
 
     try {
+      const lvlLabel = drillState.level === 'campaign' ? 'campaigns' : drillState.level === 'adset' ? 'ad sets' : 'ads';
+      let hierarchyInfo = `\nCurrent view: ${lvlLabel}`;
+      if (drillState.campaignName) hierarchyInfo += `\nFiltered by campaign: ${drillState.campaignName}`;
+      if (drillState.adsetName) hierarchyInfo += `\nFiltered by ad set: ${drillState.adsetName}`;
+
       const dataContext = rawData.length > 0
-        ? `\n\nHere is the LIVE campaign data from the dashboard (JSON):\n${JSON.stringify(rawData, null, 2)}\n\nSummary:\n- Total campaigns: ${rawData.length}\n- Total spend: $${fmtDec(sum('spend'))}\n- Total impressions: ${fmtNum(sum('impressions'))}\n- Total clicks: ${fmtNum(sum('clicks'))}\n- Avg CPC: $${fmtDec(sum('spend') / Math.max(sum('clicks'),1))}\n- Avg CTR: ${fmtDec((sum('clicks')/Math.max(sum('impressions'),1))*100)}%`
+        ? `\n\nHere is the LIVE ${lvlLabel} data from the dashboard (JSON):\n${JSON.stringify(rawData, null, 2)}${hierarchyInfo}\n\nSummary:\n- Total ${lvlLabel}: ${rawData.length}\n- Total spend: $${fmtDec(sum('spend'))}\n- Total impressions: ${fmtNum(sum('impressions'))}\n- Total clicks: ${fmtNum(sum('clicks'))}\n- Avg CPC: $${fmtDec(sum('spend') / Math.max(sum('clicks'),1))}\n- Avg CTR: ${fmtDec((sum('clicks')/Math.max(sum('impressions'),1))*100)}%`
         : '\n\nNote: No campaign data has been loaded yet. Tell the user to fetch data first.';
 
       const systemPrompt = `You are a Meta Ads AI assistant embedded in a campaign analytics dashboard.
